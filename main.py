@@ -35,7 +35,7 @@ def load_model_from_config(config, ckpt, verbose=False):
         print("unexpected keys:")
         print(u)
 
-    model.cuda()
+#    model.cuda()
     return model
 
 def get_parser(**parser_kwargs):
@@ -463,27 +463,27 @@ class ImageLogger(Callback):
                 self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
 
 
-class CUDACallback(Callback):
-    # see https://github.com/SeanNaren/minGPT/blob/master/mingpt/callback.py
-    def on_train_epoch_start(self, trainer, pl_module):
-        # Reset the memory use counter
-        torch.cuda.reset_peak_memory_stats(trainer.root_gpu)
-        torch.cuda.synchronize(trainer.root_gpu)
-        self.start_time = time.time()
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        torch.cuda.synchronize(trainer.root_gpu)
-        max_memory = torch.cuda.max_memory_allocated(trainer.root_gpu) / 2 ** 20
-        epoch_time = time.time() - self.start_time
-
-        try:
-            max_memory = trainer.training_type_plugin.reduce(max_memory)
-            epoch_time = trainer.training_type_plugin.reduce(epoch_time)
-
-            rank_zero_info(f"Average Epoch time: {epoch_time:.2f} seconds")
-            rank_zero_info(f"Average Peak memory {max_memory:.2f}MiB")
-        except AttributeError:
-            pass
+#class CUDACallback(Callback):
+#    # see https://github.com/SeanNaren/minGPT/blob/master/mingpt/callback.py
+#    def on_train_epoch_start(self, trainer, pl_module):
+#        # Reset the memory use counter
+#        torch.cuda.reset_peak_memory_stats(trainer.root_gpu)
+#        torch.cuda.synchronize(trainer.root_gpu)
+#        self.start_time = time.time()
+#
+#    def on_train_epoch_end(self, trainer, pl_module):
+#        torch.cuda.synchronize(trainer.root_gpu)
+#        max_memory = torch.cuda.max_memory_allocated(trainer.root_gpu) / 2 ** 20
+#        epoch_time = time.time() - self.start_time
+#
+#        try:
+#            max_memory = trainer.training_type_plugin.reduce(max_memory)
+#            epoch_time = trainer.training_type_plugin.reduce(epoch_time)
+#
+#            rank_zero_info(f"Average Epoch time: {epoch_time:.2f} seconds")
+#            rank_zero_info(f"Average Peak memory {max_memory:.2f}MiB")
+#        except AttributeError:
+#            pass
 
 class ModeSwapCallback(Callback):
 
@@ -608,16 +608,24 @@ if __name__ == "__main__":
         # merge trainer cli with config
         trainer_config = lightning_config.get("trainer", OmegaConf.create())
         # default to ddp
-        trainer_config["accelerator"] = "ddp"
+        trainer_config["strategy"] = "ddp"
         for k in nondefault_trainer_args(opt):
             trainer_config[k] = getattr(opt, k)
-        if not "gpus" in trainer_config:
-            del trainer_config["accelerator"]
-            cpu = True
-        else:
+
+        if torch.cuda.is_available(): 
+            device = torch.device("cuda")
             gpuinfo = trainer_config["gpus"]
             print(f"Running on GPUs {gpuinfo}")
             cpu = False
+        elif torch.backends.mps.is_built():
+            device = torch.device("mps")
+            trainer_config["accelerator"] = "mps"
+            print(f"Running on MPS")
+            cpu = False
+        else :
+           cpu = True
+           trainer_config["accelerator"] = "auto"
+
         trainer_opt = argparse.Namespace(**trainer_config)
         lightning_config.trainer = trainer_config
 
@@ -723,9 +731,9 @@ if __name__ == "__main__":
                     # "log_momentum": True
                 }
             },
-            "cuda_callback": {
-                "target": "main.CUDACallback"
-            },
+#            "cuda_callback": {
+#                "target": "main.CUDACallback"
+#            },
         }
         if version.parse(pl.__version__) >= version.parse('1.4.0'):
             default_callbacks_cfg.update({'checkpoint_callback': modelckpt_cfg})
@@ -762,7 +770,8 @@ if __name__ == "__main__":
         trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
         trainer_kwargs["max_steps"] = trainer_opt.max_steps
 
-        trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
+#        trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
+        trainer = Trainer(accelerator="mps", devices=1)
         trainer.logdir = logdir  ###
 
         # data
@@ -783,7 +792,9 @@ if __name__ == "__main__":
 
         # configure learning rate
         bs, base_lr = config.data.params.batch_size, config.model.base_learning_rate
-        if not cpu:
+        if torch.backends.mps.is_built():
+            ngpu = 1
+        elif not cpu:
             ngpu = len(lightning_config.trainer.gpus.strip(",").split(','))
         else:
             ngpu = 1
@@ -848,5 +859,5 @@ if __name__ == "__main__":
             dst = os.path.join(dst, "debug_runs", name)
             os.makedirs(os.path.split(dst)[0], exist_ok=True)
             os.rename(logdir, dst)
-        if trainer.global_rank == 0:
-            print(trainer.profiler.summary())
+#        if trainer.global_rank == 0:
+#            print(trainer.profiler.summary())
